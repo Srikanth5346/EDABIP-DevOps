@@ -1,0 +1,155 @@
+pipeline {
+    agent any
+
+    environment {
+        AWS_REGION = 'ap-south-1'
+
+        AWS_ACCOUNT_ID = '066196452918'
+
+        BACKEND_REPO = 'edabip-dev-backend'
+        FRONTEND_REPO = 'edabip-dev-frontend'
+
+        ECS_CLUSTER = 'edabip-dev-cluster'
+        BACKEND_SERVICE = 'edabip-dev-backend-service'
+        FRONTEND_SERVICE = 'edabip-dev-frontend-service'
+
+        IMAGE_TAG = 'dev'
+    }
+
+    stages {
+
+        stage('Checkout') {
+            steps {
+                checkout scm
+            }
+        }
+
+        stage('AWS Login') {
+            steps {
+                withCredentials([
+                    [$class: 'AmazonWebServicesCredentialsBinding',
+                     credentialsId: 'aws-edabip']
+                ]) {
+                    sh '''
+                        aws sts get-caller-identity
+
+                        aws ecr get-login-password \
+                        --region $AWS_REGION | \
+                        docker login \
+                        --username AWS \
+                        --password-stdin \
+                        $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com
+                    '''
+                }
+            }
+        }
+
+        stage('Build Backend') {
+            steps {
+                sh '''
+                    docker build \
+                    -t $BACKEND_REPO:$IMAGE_TAG \
+                    ./backend
+                '''
+            }
+        }
+
+        stage('Build Frontend') {
+            steps {
+                sh '''
+                    docker build \
+                    -t $FRONTEND_REPO:$IMAGE_TAG \
+                    ./frontend
+                '''
+            }
+        }
+
+        stage('Tag Images') {
+            steps {
+                sh '''
+                    docker tag \
+                    $BACKEND_REPO:$IMAGE_TAG \
+                    $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$BACKEND_REPO:$IMAGE_TAG
+
+                    docker tag \
+                    $FRONTEND_REPO:$IMAGE_TAG \
+                    $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$FRONTEND_REPO:$IMAGE_TAG
+                '''
+            }
+        }
+
+        stage('Push Images to ECR') {
+            steps {
+                sh '''
+                    docker push \
+                    $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$BACKEND_REPO:$IMAGE_TAG
+
+                    docker push \
+                    $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$FRONTEND_REPO:$IMAGE_TAG
+                '''
+            }
+        }
+
+        stage('Deploy Backend') {
+            steps {
+                withCredentials([
+                    [$class: 'AmazonWebServicesCredentialsBinding',
+                     credentialsId: 'aws-edabip']
+                ]) {
+                    sh '''
+                        aws ecs update-service \
+                        --region $AWS_REGION \
+                        --cluster $ECS_CLUSTER \
+                        --service $BACKEND_SERVICE \
+                        --force-new-deployment
+                    '''
+                }
+            }
+        }
+
+        stage('Deploy Frontend') {
+            steps {
+                withCredentials([
+                    [$class: 'AmazonWebServicesCredentialsBinding',
+                     credentialsId: 'aws-edabip']
+                ]) {
+                    sh '''
+                        aws ecs update-service \
+                        --region $AWS_REGION \
+                        --cluster $ECS_CLUSTER \
+                        --service $FRONTEND_SERVICE \
+                        --force-new-deployment
+                    '''
+                }
+            }
+        }
+
+        stage('Verify ECS') {
+            steps {
+                withCredentials([
+                    [$class: 'AmazonWebServicesCredentialsBinding',
+                     credentialsId: 'aws-edabip']
+                ]) {
+                    sh '''
+                        aws ecs describe-services \
+                        --region $AWS_REGION \
+                        --cluster $ECS_CLUSTER \
+                        --services $BACKEND_SERVICE $FRONTEND_SERVICE \
+                        --query "services[*].{Service:serviceName,Desired:desiredCount,Running:runningCount,Pending:pendingCount,Status:status}" \
+                        --output table
+                    '''
+                }
+            }
+        }
+    }
+
+    post {
+        success {
+            echo 'EDABIP CI/CD pipeline completed successfully.'
+        }
+
+        failure {
+            echo 'EDABIP CI/CD pipeline failed. Check the Jenkins console log.'
+        }
+    }
+}
