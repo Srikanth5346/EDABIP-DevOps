@@ -13,7 +13,7 @@ pipeline {
         BACKEND_SERVICE = 'edabip-dev-backend-service'
         FRONTEND_SERVICE = 'edabip-dev-frontend-service'
 
-        IMAGE_TAG = 'dev'
+        IMAGE_TAG = "${BUILD_NUMBER}"
     }
 
     stages {
